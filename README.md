@@ -2,15 +2,17 @@
 
 Android MVP for a local/offline vehicle voice assistant.
 
-## M1 Scope
+## Current Scope
 
-This milestone intentionally implements only the Android shell:
+M2 keeps the Android foreground-service shell and adds microphone capture:
 
 - Kotlin Android app package: `com.company.vehiclevoice`
 - Debug `MainActivity` with start, stop, and clear-log buttons
 - Runtime permission request for microphone and Android 13 notifications
 - `VoiceForegroundService` that starts and stops as a foreground service
 - Foreground notification with a stop action
+- `AudioRecorder` using `AudioRecord` at 16 kHz, mono, PCM16
+- 20 ms PCM frames with live RMS displayed on the debug page
 - No KWS, VAD, ASR, TTS, Redis, Unity integration, or network permission yet
 
 ## Build

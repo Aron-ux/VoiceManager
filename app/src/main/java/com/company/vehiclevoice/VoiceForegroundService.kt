@@ -9,10 +9,15 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
+import com.company.vehiclevoice.audio.AudioRecorder
+import com.company.vehiclevoice.audio.PcmFrame
 
 class VoiceForegroundService : Service() {
 
     private var currentState = STATE_STOPPED
+    private var audioRecorder: AudioRecorder? = null
+    private var lastRmsBroadcastMs = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -28,7 +33,7 @@ class VoiceForegroundService : Service() {
             }
 
             ACTION_START, null -> {
-                startM1ForegroundService()
+                startVoiceForegroundService()
                 START_STICKY
             }
 
@@ -40,6 +45,7 @@ class VoiceForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        stopAudioRecorder()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -54,16 +60,73 @@ class VoiceForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startM1ForegroundService() {
+    private fun startVoiceForegroundService() {
         currentState = STATE_IDLE_KWS
         startForeground(
             VOICE_NOTIFICATION_ID,
-            buildNotification("M1 service running. Waiting for future KWS wiring."),
+            buildNotification("M2 service running. Capturing 16 kHz PCM frames."),
         )
+
+        startAudioRecorder()
         updateState(
             STATE_IDLE_KWS,
-            "Foreground voice service started. M1 only keeps the service alive; audio/KWS are not active yet.",
+            "Foreground voice service started. AudioRecorder is capturing 16 kHz mono PCM16, 20 ms frames.",
         )
+    }
+
+    private fun startAudioRecorder() {
+        if (audioRecorder != null) {
+            return
+        }
+
+        audioRecorder = AudioRecorder(
+            object : AudioRecorder.Listener {
+                override fun onFrame(frame: PcmFrame) {
+                    maybeBroadcastRms(frame)
+                }
+
+                override fun onError(message: String, error: Throwable?) {
+                    val detail = error?.message?.let { "$message $it" } ?: message
+                    updateState(currentState, detail)
+                }
+            },
+        )
+
+        val started = audioRecorder?.start() == true
+        if (!started) {
+            audioRecorder = null
+        }
+    }
+
+    private fun stopAudioRecorder() {
+        audioRecorder?.stop()
+        audioRecorder = null
+    }
+
+    private fun maybeBroadcastRms(frame: PcmFrame) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastRmsBroadcastMs < RMS_BROADCAST_INTERVAL_MS) {
+            return
+        }
+
+        lastRmsBroadcastMs = now
+        VoiceStatusBus.publish(
+            VoiceStatusSnapshot(
+                state = currentState,
+                rms = frame.rms,
+                frameSequence = frame.sequence,
+                sampleRateHz = frame.sampleRateHz,
+            ),
+        )
+
+        val intent = Intent(ACTION_STATUS).apply {
+            setPackage(packageName)
+            putExtra(EXTRA_STATE, currentState)
+            putExtra(EXTRA_RMS, frame.rms)
+            putExtra(EXTRA_FRAME_SEQUENCE, frame.sequence)
+            putExtra(EXTRA_SAMPLE_RATE_HZ, frame.sampleRateHz)
+        }
+        sendBroadcast(intent)
     }
 
     private fun updateState(state: String, message: String) {
@@ -79,6 +142,13 @@ class VoiceForegroundService : Service() {
     }
 
     private fun sendStatusBroadcast(state: String, message: String) {
+        VoiceStatusBus.publish(
+            VoiceStatusSnapshot(
+                state = state,
+                message = message,
+            ),
+        )
+
         val statusIntent = Intent(ACTION_STATUS).apply {
             setPackage(packageName)
             putExtra(EXTRA_STATE, state)
@@ -138,6 +208,9 @@ class VoiceForegroundService : Service() {
 
         const val EXTRA_STATE = "extra_state"
         const val EXTRA_MESSAGE = "extra_message"
+        const val EXTRA_RMS = "extra_rms"
+        const val EXTRA_FRAME_SEQUENCE = "extra_frame_sequence"
+        const val EXTRA_SAMPLE_RATE_HZ = "extra_sample_rate_hz"
 
         const val STATE_UNKNOWN = "UNKNOWN"
         const val STATE_STOPPED = "STOPPED"
@@ -146,6 +219,7 @@ class VoiceForegroundService : Service() {
 
         private const val CHANNEL_ID = "voice_foreground_service"
         private const val VOICE_NOTIFICATION_ID = 20260607
+        private const val RMS_BROADCAST_INTERVAL_MS = 200L
 
         fun createStartIntent(context: Context): Intent {
             return Intent(context, VoiceForegroundService::class.java).apply {

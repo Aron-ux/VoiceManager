@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">VehicleOfflineVoice</string>
-    <string name="m1_subtitle">M1: foreground service shell only. KWS/VAD/ASR/TTS are intentionally disabled.</string>
+    <string name="m1_subtitle">M2: AudioRecord captures 16 kHz mono PCM16 frames. KWS/VAD/ASR/TTS are intentionally disabled.</string>
     <string name="current_state_template">当前状态：%1$s</string>
+    <string name="rms_template">RMS: %1$.4f | peak: %2$.4f | frame: %3$d | sample rate: %4$d Hz</string>
     <string name="start_service">启动服务</string>
     <string name="stop_service">停止服务</string>
     <string name="clear_log">清空日志</string>
@@ -10,4 +11,3 @@
     <string name="notification_channel_name">Voice foreground service</string>
     <string name="notification_channel_description">Keeps the offline voice assistant foreground service visible during development.</string>
 </resources>
-

@@ -2,10 +2,7 @@ package com.company.vehiclevoice
 
 import android.Manifest
 import android.app.Activity
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -22,36 +19,29 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private lateinit var statusText: TextView
+    private lateinit var rmsText: TextView
     private lateinit var logText: TextView
     private lateinit var logScroll: ScrollView
-    private var receiverRegistered = false
+    private var peakRms = 0.0
 
-    private val statusReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            val state = intent.getStringExtra(VoiceForegroundService.EXTRA_STATE)
-                ?: VoiceForegroundService.STATE_UNKNOWN
-            val message = intent.getStringExtra(VoiceForegroundService.EXTRA_MESSAGE)
-                ?: "Service state changed."
-
-            statusText.text = getString(R.string.current_state_template, state)
-            appendLog(message)
-        }
+    private val statusListener: (VoiceStatusSnapshot) -> Unit = { snapshot ->
+        renderStatus(snapshot)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(createContentView())
 
-        appendLog("M1 debug page ready. KWS/VAD/ASR/TTS are not wired yet.")
+        appendLog("M2 debug page ready. AudioRecord RMS is wired; KWS/VAD/ASR/TTS are not wired yet.")
     }
 
     override fun onStart() {
         super.onStart()
-        registerStatusReceiver()
+        VoiceStatusBus.setListener(statusListener)
     }
 
     override fun onStop() {
-        unregisterStatusReceiver()
+        VoiceStatusBus.setListener(null)
         super.onStop()
     }
 
@@ -103,6 +93,14 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(14))
         }
         root.addView(statusText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+
+        rmsText = TextView(this).apply {
+            text = getString(R.string.rms_template, 0.0, 0.0, 0L, 16_000)
+            textSize = 16f
+            setTextColor(0xFF365144.toInt())
+            setPadding(0, 0, 0, dp(14))
+        }
+        root.addView(rmsText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
         val buttonRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -192,28 +190,22 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun registerStatusReceiver() {
-        if (receiverRegistered) {
-            return
+    private fun renderStatus(snapshot: VoiceStatusSnapshot) {
+        statusText.text = getString(R.string.current_state_template, snapshot.state)
+        if (snapshot.rms != null) {
+            peakRms = maxOf(peakRms, snapshot.rms)
+            rmsText.text = getString(
+                R.string.rms_template,
+                snapshot.rms,
+                peakRms,
+                snapshot.frameSequence ?: 0L,
+                snapshot.sampleRateHz ?: 0,
+            )
         }
 
-        val filter = IntentFilter(VoiceForegroundService.ACTION_STATUS)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(statusReceiver, filter)
+        if (snapshot.message != null) {
+            appendLog(snapshot.message)
         }
-        receiverRegistered = true
-    }
-
-    private fun unregisterStatusReceiver() {
-        if (!receiverRegistered) {
-            return
-        }
-
-        unregisterReceiver(statusReceiver)
-        receiverRegistered = false
     }
 
     private fun appendLog(message: String) {
