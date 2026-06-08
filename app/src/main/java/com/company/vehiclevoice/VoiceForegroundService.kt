@@ -24,12 +24,14 @@ import com.company.vehiclevoice.engine.AsrResult
 import com.company.vehiclevoice.engine.KwsDetection
 import com.company.vehiclevoice.engine.KwsEngine
 import com.company.vehiclevoice.engine.KwsModelAssets
+import com.company.vehiclevoice.engine.TtsEngine
 import com.company.vehiclevoice.engine.VadEndReason
 import com.company.vehiclevoice.engine.VadEngine
 import com.company.vehiclevoice.engine.VadEvent
 import com.company.vehiclevoice.engine.VadSegment
 import com.company.vehiclevoice.nlu.IntentResult
 import com.company.vehiclevoice.nlu.RuleIntentParser
+import com.company.vehiclevoice.response.ResponseTemplateEngine
 
 class VoiceForegroundService : Service() {
 
@@ -38,6 +40,7 @@ class VoiceForegroundService : Service() {
     private var audioRecorder: AudioRecorder? = null
     private var kwsEngine: KwsEngine? = null
     private var asrEngine: AsrEngine? = null
+    private var ttsEngine: TtsEngine? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastRmsBroadcastMs = 0L
     private var lastWakeDetectedMs = 0L
@@ -53,9 +56,14 @@ class VoiceForegroundService : Service() {
     private var lastAsrElapsedMs = 0L
     private val intentParser = RuleIntentParser()
     private val vehicleStateRepository = MockVehicleStateRepository()
+    private val responseTemplateEngine = ResponseTemplateEngine()
     private var lastIntentResult: IntentResult? = null
     private var lastVehicleState: VehicleStateSnapshot? = null
     private var lastVoiceActionJson = ""
+    private var ttsCount = 0
+    private var ttsPlaying = false
+    private var lastTtsText = ""
+    private var lastTtsUtteranceId: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -87,6 +95,7 @@ class VoiceForegroundService : Service() {
         stopAudioRecorder()
         stopKwsEngine()
         stopAsrEngine()
+        stopTtsEngine()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -105,16 +114,17 @@ class VoiceForegroundService : Service() {
         currentState = STATE_IDLE_KWS
         startForeground(
             VOICE_NOTIFICATION_ID,
-            buildNotification("M6 service starting. Loading KWS/ASR models."),
+            buildNotification("M7 service starting. Loading KWS/ASR/TTS."),
         )
 
         startKwsEngine()
         startAsrEngine()
+        startTtsEngine()
         startAudioRecorder()
         updateState(
             STATE_IDLE_KWS,
             if (kwsEngine?.isStarted == true && asrEngine?.isStarted == true) {
-                "Foreground voice service started. M6 rule intent and mock vehicle state are ready."
+                "Foreground voice service started. M7 template response and Android TTS are initializing."
             } else {
                 "Foreground voice service started, but KWS or ASR is not ready. Check model files/logs."
             },
@@ -194,6 +204,61 @@ class VoiceForegroundService : Service() {
     private fun stopAsrEngine() {
         asrEngine?.stop()
         asrEngine = null
+    }
+
+    private fun startTtsEngine() {
+        if (ttsEngine != null) {
+            return
+        }
+
+        ttsEngine = TtsEngine(
+            this,
+            object : TtsEngine.Listener {
+                override fun onReady(message: String) {
+                    updateState(currentState, message)
+                }
+
+                override fun onInitFailed(message: String) {
+                    updateState(currentState, "$message M7 will keep generating text responses without playback.")
+                }
+
+                override fun onPlaybackStarted(utteranceId: String) {
+                    if (utteranceId != lastTtsUtteranceId || currentState == STATE_STOPPING) {
+                        return
+                    }
+
+                    ttsPlaying = true
+                    updateState(STATE_TTS_PLAYING, "TTS playback started: '$lastTtsText'.")
+                }
+
+                override fun onPlaybackCompleted(utteranceId: String) {
+                    if (utteranceId != lastTtsUtteranceId || currentState == STATE_STOPPING) {
+                        return
+                    }
+
+                    ttsPlaying = false
+                    kwsEngine?.reset()
+                    updateState(STATE_IDLE_KWS, "TTS playback completed. Returning to IDLE_KWS.")
+                }
+
+                override fun onPlaybackFailed(utteranceId: String, message: String) {
+                    if (utteranceId != lastTtsUtteranceId || currentState == STATE_STOPPING) {
+                        return
+                    }
+
+                    ttsPlaying = false
+                    kwsEngine?.reset()
+                    updateState(STATE_IDLE_KWS, "$message Returning to IDLE_KWS.")
+                }
+            },
+        )
+        updateState(currentState, "Android TextToSpeech engine is initializing.")
+    }
+
+    private fun stopTtsEngine() {
+        ttsPlaying = false
+        ttsEngine?.shutdown()
+        ttsEngine = null
     }
 
     private fun maybeProcessKws(frame: PcmFrame) {
@@ -353,9 +418,44 @@ class VoiceForegroundService : Service() {
             Log.i(LOG_TAG, "mock_unity_action=$lastVoiceActionJson")
         }
 
+        val responseText = responseTemplateEngine.render(intentResult, state)
+        lastTtsText = responseText
         updateState(
-            STATE_IDLE_KWS,
-            "M6 result: intent=${intentResult.intentId}, state=${state.toDisplayText()}. Returning to IDLE_KWS.",
+            STATE_TEMPLATE_RESPONSE,
+            "M7 response template: intent=${intentResult.intentId}, text='$responseText'.",
+        )
+        speakResponse(responseText)
+    }
+
+    private fun speakResponse(responseText: String) {
+        val engine = ttsEngine
+        if (engine == null || !engine.isReady) {
+            ttsPlaying = false
+            kwsEngine?.reset()
+            updateState(
+                STATE_IDLE_KWS,
+                "TTS is not ready. Response text='$responseText'. Returning to IDLE_KWS.",
+            )
+            return
+        }
+
+        val utteranceId = engine.speak(responseText)
+        if (utteranceId == null) {
+            ttsPlaying = false
+            kwsEngine?.reset()
+            updateState(
+                STATE_IDLE_KWS,
+                "TextToSpeech rejected response text='$responseText'. Returning to IDLE_KWS.",
+            )
+            return
+        }
+
+        ttsCount += 1
+        ttsPlaying = true
+        lastTtsUtteranceId = utteranceId
+        updateState(
+            STATE_TTS_PLAYING,
+            "M7 TTS response #$ttsCount queued: '$responseText'.",
         )
     }
 
@@ -391,6 +491,10 @@ class VoiceForegroundService : Service() {
                 normalizedText = lastIntentResult?.normalizedText,
                 mockStateText = lastVehicleState?.toDisplayText(),
                 voiceActionJson = lastVoiceActionJson,
+                ttsReady = ttsEngine?.isReady == true,
+                ttsPlaying = ttsPlaying,
+                ttsText = lastTtsText,
+                ttsCount = ttsCount,
             ),
         )
 
@@ -419,6 +523,10 @@ class VoiceForegroundService : Service() {
             putExtra(EXTRA_NORMALIZED_TEXT, lastIntentResult?.normalizedText)
             putExtra(EXTRA_MOCK_STATE_TEXT, lastVehicleState?.toDisplayText())
             putExtra(EXTRA_VOICE_ACTION_JSON, lastVoiceActionJson)
+            putExtra(EXTRA_TTS_READY, ttsEngine?.isReady == true)
+            putExtra(EXTRA_TTS_PLAYING, ttsPlaying)
+            putExtra(EXTRA_TTS_TEXT, lastTtsText)
+            putExtra(EXTRA_TTS_COUNT, ttsCount)
         }
         sendBroadcast(intent)
     }
@@ -460,6 +568,10 @@ class VoiceForegroundService : Service() {
                 normalizedText = lastIntentResult?.normalizedText,
                 mockStateText = lastVehicleState?.toDisplayText(),
                 voiceActionJson = lastVoiceActionJson,
+                ttsReady = ttsEngine?.isReady == true,
+                ttsPlaying = ttsPlaying,
+                ttsText = lastTtsText,
+                ttsCount = ttsCount,
             ),
         )
 
@@ -486,6 +598,10 @@ class VoiceForegroundService : Service() {
             putExtra(EXTRA_NORMALIZED_TEXT, lastIntentResult?.normalizedText)
             putExtra(EXTRA_MOCK_STATE_TEXT, lastVehicleState?.toDisplayText())
             putExtra(EXTRA_VOICE_ACTION_JSON, lastVoiceActionJson)
+            putExtra(EXTRA_TTS_READY, ttsEngine?.isReady == true)
+            putExtra(EXTRA_TTS_PLAYING, ttsPlaying)
+            putExtra(EXTRA_TTS_TEXT, lastTtsText)
+            putExtra(EXTRA_TTS_COUNT, ttsCount)
         }
         sendBroadcast(statusIntent)
     }
@@ -563,6 +679,10 @@ class VoiceForegroundService : Service() {
         const val EXTRA_NORMALIZED_TEXT = "extra_normalized_text"
         const val EXTRA_MOCK_STATE_TEXT = "extra_mock_state_text"
         const val EXTRA_VOICE_ACTION_JSON = "extra_voice_action_json"
+        const val EXTRA_TTS_READY = "extra_tts_ready"
+        const val EXTRA_TTS_PLAYING = "extra_tts_playing"
+        const val EXTRA_TTS_TEXT = "extra_tts_text"
+        const val EXTRA_TTS_COUNT = "extra_tts_count"
 
         const val STATE_UNKNOWN = "UNKNOWN"
         const val STATE_STOPPED = "STOPPED"
@@ -574,6 +694,8 @@ class VoiceForegroundService : Service() {
         const val STATE_ASR_DONE = "ASR_DONE"
         const val STATE_INTENT_PARSE = "INTENT_PARSE"
         const val STATE_STATE_QUERY = "STATE_QUERY"
+        const val STATE_TEMPLATE_RESPONSE = "TEMPLATE_RESPONSE"
+        const val STATE_TTS_PLAYING = "TTS_PLAYING"
 
         private const val CHANNEL_ID = "voice_foreground_service"
         private const val VOICE_NOTIFICATION_ID = 20260607

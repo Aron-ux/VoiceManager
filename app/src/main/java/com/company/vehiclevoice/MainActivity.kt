@@ -23,6 +23,7 @@ class MainActivity : Activity() {
     private lateinit var vadText: TextView
     private lateinit var asrText: TextView
     private lateinit var intentText: TextView
+    private lateinit var ttsText: TextView
     private lateinit var rmsText: TextView
     private lateinit var logText: TextView
     private lateinit var logScroll: ScrollView
@@ -46,6 +47,10 @@ class MainActivity : Activity() {
     private var latestNormalizedText = "-"
     private var latestMockState = "-"
     private var latestVoiceActionJson = ""
+    private var latestTtsReady = false
+    private var latestTtsPlaying = false
+    private var latestTtsResult = "-"
+    private var latestTtsCount = 0
 
     private val statusListener: (VoiceStatusSnapshot) -> Unit = { snapshot ->
         renderStatus(snapshot)
@@ -55,7 +60,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(createContentView())
 
-        appendLog("M6 debug page ready. ASR text is parsed by rules and mapped to mock vehicle state. TTS/Redis are not wired yet.")
+        appendLog("M7 debug page ready. Rules and mock state now generate template responses for Android TextToSpeech.")
     }
 
     override fun onStart() {
@@ -148,6 +153,14 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(14))
         }
         root.addView(intentText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+
+        ttsText = TextView(this).apply {
+            text = getString(R.string.tts_template, "not ready", 0, "-")
+            textSize = 15f
+            setTextColor(0xFF365144.toInt())
+            setPadding(0, 0, 0, dp(14))
+        }
+        root.addView(ttsText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
         rmsText = TextView(this).apply {
             text = getString(R.string.rms_template, 0.0, 0.0, 0L, 16_000)
@@ -337,6 +350,29 @@ class MainActivity : Activity() {
             latestIntentConfidence,
             latestNormalizedText,
             latestMockState,
+        )
+
+        if (snapshot.ttsReady != null) {
+            latestTtsReady = snapshot.ttsReady
+        }
+        if (snapshot.ttsPlaying != null) {
+            latestTtsPlaying = snapshot.ttsPlaying
+        }
+        if (snapshot.ttsCount != null) {
+            latestTtsCount = snapshot.ttsCount
+        }
+        if (!snapshot.ttsText.isNullOrBlank()) {
+            latestTtsResult = snapshot.ttsText
+        }
+        ttsText.text = getString(
+            R.string.tts_template,
+            when {
+                latestTtsPlaying -> "playing"
+                latestTtsReady -> "ready"
+                else -> "not ready"
+            },
+            latestTtsCount,
+            latestTtsResult,
         )
 
         if (snapshot.rms != null) {

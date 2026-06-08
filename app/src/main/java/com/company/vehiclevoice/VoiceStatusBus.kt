@@ -28,6 +28,10 @@ data class VoiceStatusSnapshot(
     val normalizedText: String? = null,
     val mockStateText: String? = null,
     val voiceActionJson: String? = null,
+    val ttsReady: Boolean? = null,
+    val ttsPlaying: Boolean? = null,
+    val ttsText: String? = null,
+    val ttsCount: Int? = null,
 )
 
 object VoiceStatusBus {
