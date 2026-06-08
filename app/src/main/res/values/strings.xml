@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">VehicleOfflineVoice</string>
-    <string name="m1_subtitle">M2: AudioRecord captures 16 kHz mono PCM16 frames. KWS/VAD/ASR/TTS are intentionally disabled.</string>
+    <string name="m1_subtitle">M3: sherpa-onnx KWS listens for 小智小智 / 你好小智. VAD/ASR/TTS are intentionally disabled.</string>
     <string name="current_state_template">当前状态：%1$s</string>
+    <string name="kws_template">KWS: %1$s | wakes: %2$d | last: %3$s</string>
     <string name="rms_template">RMS: %1$.4f | peak: %2$.4f | frame: %3$d | sample rate: %4$d Hz</string>
     <string name="start_service">启动服务</string>
     <string name="stop_service">停止服务</string>

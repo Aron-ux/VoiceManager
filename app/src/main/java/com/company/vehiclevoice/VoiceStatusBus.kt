@@ -9,6 +9,9 @@ data class VoiceStatusSnapshot(
     val rms: Double? = null,
     val frameSequence: Long? = null,
     val sampleRateHz: Int? = null,
+    val kwsReady: Boolean? = null,
+    val wakeKeyword: String? = null,
+    val wakeCount: Int? = null,
 )
 
 object VoiceStatusBus {
@@ -35,4 +38,3 @@ object VoiceStatusBus {
         }
     }
 }
-

@@ -19,10 +19,14 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private lateinit var statusText: TextView
+    private lateinit var kwsText: TextView
     private lateinit var rmsText: TextView
     private lateinit var logText: TextView
     private lateinit var logScroll: ScrollView
     private var peakRms = 0.0
+    private var latestWakeKeyword = "-"
+    private var latestWakeCount = 0
+    private var latestKwsReady = false
 
     private val statusListener: (VoiceStatusSnapshot) -> Unit = { snapshot ->
         renderStatus(snapshot)
@@ -32,7 +36,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(createContentView())
 
-        appendLog("M2 debug page ready. AudioRecord RMS is wired; KWS/VAD/ASR/TTS are not wired yet.")
+        appendLog("M3 debug page ready. sherpa-onnx KWS is wired; VAD/ASR/TTS are not wired yet.")
     }
 
     override fun onStart() {
@@ -93,6 +97,14 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(14))
         }
         root.addView(statusText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+
+        kwsText = TextView(this).apply {
+            text = getString(R.string.kws_template, "not ready", 0, "-")
+            textSize = 16f
+            setTextColor(0xFF365144.toInt())
+            setPadding(0, 0, 0, dp(14))
+        }
+        root.addView(kwsText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
         rmsText = TextView(this).apply {
             text = getString(R.string.rms_template, 0.0, 0.0, 0L, 16_000)
@@ -192,6 +204,22 @@ class MainActivity : Activity() {
 
     private fun renderStatus(snapshot: VoiceStatusSnapshot) {
         statusText.text = getString(R.string.current_state_template, snapshot.state)
+        if (snapshot.kwsReady != null) {
+            latestKwsReady = snapshot.kwsReady
+        }
+        if (snapshot.wakeCount != null) {
+            latestWakeCount = snapshot.wakeCount
+        }
+        if (!snapshot.wakeKeyword.isNullOrBlank()) {
+            latestWakeKeyword = snapshot.wakeKeyword
+        }
+        kwsText.text = getString(
+            R.string.kws_template,
+            if (latestKwsReady) "ready" else "not ready",
+            latestWakeCount,
+            latestWakeKeyword,
+        )
+
         if (snapshot.rms != null) {
             peakRms = maxOf(peakRms, snapshot.rms)
             rmsText.text = getString(
