@@ -13,8 +13,11 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import com.company.vehiclevoice.action.VoiceAction
 import com.company.vehiclevoice.audio.AudioRecorder
 import com.company.vehiclevoice.audio.PcmFrame
+import com.company.vehiclevoice.data.MockVehicleStateRepository
+import com.company.vehiclevoice.data.VehicleStateSnapshot
 import com.company.vehiclevoice.engine.AsrEngine
 import com.company.vehiclevoice.engine.AsrModelAssets
 import com.company.vehiclevoice.engine.AsrResult
@@ -25,6 +28,8 @@ import com.company.vehiclevoice.engine.VadEndReason
 import com.company.vehiclevoice.engine.VadEngine
 import com.company.vehiclevoice.engine.VadEvent
 import com.company.vehiclevoice.engine.VadSegment
+import com.company.vehiclevoice.nlu.IntentResult
+import com.company.vehiclevoice.nlu.RuleIntentParser
 
 class VoiceForegroundService : Service() {
 
@@ -46,6 +51,11 @@ class VoiceForegroundService : Service() {
     private var asrRunning = false
     private var lastAsrText = ""
     private var lastAsrElapsedMs = 0L
+    private val intentParser = RuleIntentParser()
+    private val vehicleStateRepository = MockVehicleStateRepository()
+    private var lastIntentResult: IntentResult? = null
+    private var lastVehicleState: VehicleStateSnapshot? = null
+    private var lastVoiceActionJson = ""
 
     override fun onCreate() {
         super.onCreate()
@@ -95,7 +105,7 @@ class VoiceForegroundService : Service() {
         currentState = STATE_IDLE_KWS
         startForeground(
             VOICE_NOTIFICATION_ID,
-            buildNotification("M5 service starting. Loading KWS/ASR models."),
+            buildNotification("M6 service starting. Loading KWS/ASR models."),
         )
 
         startKwsEngine()
@@ -104,7 +114,7 @@ class VoiceForegroundService : Service() {
         updateState(
             STATE_IDLE_KWS,
             if (kwsEngine?.isStarted == true && asrEngine?.isStarted == true) {
-                "Foreground voice service started. KWS is listening; M5 ASR will decode VAD segments."
+                "Foreground voice service started. M6 rule intent and mock vehicle state are ready."
             } else {
                 "Foreground voice service started, but KWS or ASR is not ready. Check model files/logs."
             },
@@ -315,8 +325,37 @@ class VoiceForegroundService : Service() {
         lastAsrElapsedMs = result.elapsedMs
         kwsEngine?.reset()
         updateState(
+            STATE_ASR_DONE,
+            "ASR result #$asrCount: '$lastAsrText' in ${result.elapsedMs}ms for ${result.audioDurationMs}ms audio.",
+        )
+        handleIntentAndState(lastAsrText)
+    }
+
+    private fun handleIntentAndState(asrText: String) {
+        updateState(STATE_INTENT_PARSE, "Parsing ASR text with rule intent parser.")
+        val intentResult = intentParser.parse(asrText)
+        lastIntentResult = intentResult
+
+        updateState(
+            STATE_STATE_QUERY,
+            "Intent=${intentResult.intentId}, confidence=${"%.2f".format(intentResult.confidence)}, normalized='${intentResult.normalizedText}'.",
+        )
+
+        val state = vehicleStateRepository.getState(intentResult.requiredStateKeys)
+        lastVehicleState = state
+        lastVoiceActionJson = if (intentResult.matched) {
+            VoiceAction.from(asrText, intentResult, state).toJson()
+        } else {
+            ""
+        }
+
+        if (lastVoiceActionJson.isNotBlank()) {
+            Log.i(LOG_TAG, "mock_unity_action=$lastVoiceActionJson")
+        }
+
+        updateState(
             STATE_IDLE_KWS,
-            "ASR result #$asrCount: '$lastAsrText' in ${result.elapsedMs}ms for ${result.audioDurationMs}ms audio. Returning to IDLE_KWS.",
+            "M6 result: intent=${intentResult.intentId}, state=${state.toDisplayText()}. Returning to IDLE_KWS.",
         )
     }
 
@@ -347,6 +386,11 @@ class VoiceForegroundService : Service() {
                 asrText = lastAsrText,
                 asrCount = asrCount,
                 asrLastElapsedMs = lastAsrElapsedMs,
+                intentId = lastIntentResult?.intentId,
+                intentConfidence = lastIntentResult?.confidence,
+                normalizedText = lastIntentResult?.normalizedText,
+                mockStateText = lastVehicleState?.toDisplayText(),
+                voiceActionJson = lastVoiceActionJson,
             ),
         )
 
@@ -370,6 +414,11 @@ class VoiceForegroundService : Service() {
             putExtra(EXTRA_ASR_TEXT, lastAsrText)
             putExtra(EXTRA_ASR_COUNT, asrCount)
             putExtra(EXTRA_ASR_LAST_ELAPSED_MS, lastAsrElapsedMs)
+            putExtra(EXTRA_INTENT_ID, lastIntentResult?.intentId)
+            putExtra(EXTRA_INTENT_CONFIDENCE, lastIntentResult?.confidence ?: 0.0)
+            putExtra(EXTRA_NORMALIZED_TEXT, lastIntentResult?.normalizedText)
+            putExtra(EXTRA_MOCK_STATE_TEXT, lastVehicleState?.toDisplayText())
+            putExtra(EXTRA_VOICE_ACTION_JSON, lastVoiceActionJson)
         }
         sendBroadcast(intent)
     }
@@ -406,6 +455,11 @@ class VoiceForegroundService : Service() {
                 asrText = lastAsrText,
                 asrCount = asrCount,
                 asrLastElapsedMs = lastAsrElapsedMs,
+                intentId = lastIntentResult?.intentId,
+                intentConfidence = lastIntentResult?.confidence,
+                normalizedText = lastIntentResult?.normalizedText,
+                mockStateText = lastVehicleState?.toDisplayText(),
+                voiceActionJson = lastVoiceActionJson,
             ),
         )
 
@@ -427,6 +481,11 @@ class VoiceForegroundService : Service() {
             putExtra(EXTRA_ASR_TEXT, lastAsrText)
             putExtra(EXTRA_ASR_COUNT, asrCount)
             putExtra(EXTRA_ASR_LAST_ELAPSED_MS, lastAsrElapsedMs)
+            putExtra(EXTRA_INTENT_ID, lastIntentResult?.intentId)
+            putExtra(EXTRA_INTENT_CONFIDENCE, lastIntentResult?.confidence ?: 0.0)
+            putExtra(EXTRA_NORMALIZED_TEXT, lastIntentResult?.normalizedText)
+            putExtra(EXTRA_MOCK_STATE_TEXT, lastVehicleState?.toDisplayText())
+            putExtra(EXTRA_VOICE_ACTION_JSON, lastVoiceActionJson)
         }
         sendBroadcast(statusIntent)
     }
@@ -499,6 +558,11 @@ class VoiceForegroundService : Service() {
         const val EXTRA_ASR_TEXT = "extra_asr_text"
         const val EXTRA_ASR_COUNT = "extra_asr_count"
         const val EXTRA_ASR_LAST_ELAPSED_MS = "extra_asr_last_elapsed_ms"
+        const val EXTRA_INTENT_ID = "extra_intent_id"
+        const val EXTRA_INTENT_CONFIDENCE = "extra_intent_confidence"
+        const val EXTRA_NORMALIZED_TEXT = "extra_normalized_text"
+        const val EXTRA_MOCK_STATE_TEXT = "extra_mock_state_text"
+        const val EXTRA_VOICE_ACTION_JSON = "extra_voice_action_json"
 
         const val STATE_UNKNOWN = "UNKNOWN"
         const val STATE_STOPPED = "STOPPED"
@@ -507,6 +571,9 @@ class VoiceForegroundService : Service() {
         const val STATE_LISTENING = "LISTENING"
         const val STATE_VAD_END = "VAD_END"
         const val STATE_ASR_RUNNING = "ASR_RUNNING"
+        const val STATE_ASR_DONE = "ASR_DONE"
+        const val STATE_INTENT_PARSE = "INTENT_PARSE"
+        const val STATE_STATE_QUERY = "STATE_QUERY"
 
         private const val CHANNEL_ID = "voice_foreground_service"
         private const val VOICE_NOTIFICATION_ID = 20260607

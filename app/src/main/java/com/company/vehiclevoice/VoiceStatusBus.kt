@@ -23,6 +23,11 @@ data class VoiceStatusSnapshot(
     val asrText: String? = null,
     val asrCount: Int? = null,
     val asrLastElapsedMs: Long? = null,
+    val intentId: String? = null,
+    val intentConfidence: Double? = null,
+    val normalizedText: String? = null,
+    val mockStateText: String? = null,
+    val voiceActionJson: String? = null,
 )
 
 object VoiceStatusBus {

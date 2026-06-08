@@ -22,6 +22,7 @@ class MainActivity : Activity() {
     private lateinit var kwsText: TextView
     private lateinit var vadText: TextView
     private lateinit var asrText: TextView
+    private lateinit var intentText: TextView
     private lateinit var rmsText: TextView
     private lateinit var logText: TextView
     private lateinit var logScroll: ScrollView
@@ -40,6 +41,11 @@ class MainActivity : Activity() {
     private var latestAsrResult = "-"
     private var latestAsrCount = 0
     private var latestAsrElapsedMs = 0L
+    private var latestIntentId = "-"
+    private var latestIntentConfidence = 0.0
+    private var latestNormalizedText = "-"
+    private var latestMockState = "-"
+    private var latestVoiceActionJson = ""
 
     private val statusListener: (VoiceStatusSnapshot) -> Unit = { snapshot ->
         renderStatus(snapshot)
@@ -49,7 +55,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(createContentView())
 
-        appendLog("M5 debug page ready. KWS and VAD are wired; ASR decodes each VAD segment. Rule/TTS are not wired yet.")
+        appendLog("M6 debug page ready. ASR text is parsed by rules and mapped to mock vehicle state. TTS/Redis are not wired yet.")
     }
 
     override fun onStart() {
@@ -134,6 +140,14 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(14))
         }
         root.addView(asrText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+
+        intentText = TextView(this).apply {
+            text = getString(R.string.intent_template, "-", 0.0, "-", "-")
+            textSize = 15f
+            setTextColor(0xFF365144.toInt())
+            setPadding(0, 0, 0, dp(14))
+        }
+        root.addView(intentText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
         rmsText = TextView(this).apply {
             text = getString(R.string.rms_template, 0.0, 0.0, 0L, 16_000)
@@ -304,6 +318,27 @@ class MainActivity : Activity() {
             latestAsrResult,
         )
 
+        if (!snapshot.intentId.isNullOrBlank()) {
+            latestIntentId = snapshot.intentId
+        }
+        if (snapshot.intentConfidence != null) {
+            latestIntentConfidence = snapshot.intentConfidence
+        }
+        if (!snapshot.normalizedText.isNullOrBlank()) {
+            latestNormalizedText = snapshot.normalizedText
+        }
+        if (!snapshot.mockStateText.isNullOrBlank()) {
+            latestMockState = snapshot.mockStateText
+        }
+        val newVoiceActionJson = snapshot.voiceActionJson
+        intentText.text = getString(
+            R.string.intent_template,
+            latestIntentId,
+            latestIntentConfidence,
+            latestNormalizedText,
+            latestMockState,
+        )
+
         if (snapshot.rms != null) {
             peakRms = maxOf(peakRms, snapshot.rms)
             rmsText.text = getString(
@@ -317,6 +352,10 @@ class MainActivity : Activity() {
 
         if (snapshot.message != null) {
             appendLog(snapshot.message)
+        }
+        if (!newVoiceActionJson.isNullOrBlank() && newVoiceActionJson != latestVoiceActionJson) {
+            appendLog("voice.action $newVoiceActionJson")
+            latestVoiceActionJson = newVoiceActionJson
         }
     }
 

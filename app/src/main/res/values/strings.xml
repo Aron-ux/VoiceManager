@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">VehicleOfflineVoice</string>
-    <string name="m1_subtitle">M5：KWS 常驻监听，唤醒后 VAD 截断一句话，并交给本地 ASR 输出中文文本。</string>
+    <string name="m1_subtitle">M6：ASR 文本进入规则语义，使用白名单映射查询 Mock 车辆状态。</string>
     <string name="current_state_template">当前状态：%1$s</string>
     <string name="kws_template">KWS: %1$s | wakes: %2$d | last: %3$s</string>
     <string name="vad_template">VAD: %1$s | segments: %2$d | last: %3$s | duration: %4$d ms | speech: %5$d ms | samples: %6$d</string>
     <string name="asr_template">ASR: %1$s | count: %2$d | last: %3$d ms | text: %4$s</string>
+    <string name="intent_template">Intent: %1$s | conf: %2$.2f | normalized: %3$s | mock: %4$s</string>
     <string name="rms_template">RMS: %1$.4f | peak: %2$.4f | frame: %3$d | sample rate: %4$d Hz</string>
     <string name="start_service">启动服务</string>
     <string name="stop_service">停止服务</string>
