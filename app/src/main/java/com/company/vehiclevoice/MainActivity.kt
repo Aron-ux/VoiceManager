@@ -21,6 +21,7 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var kwsText: TextView
     private lateinit var vadText: TextView
+    private lateinit var asrText: TextView
     private lateinit var rmsText: TextView
     private lateinit var logText: TextView
     private lateinit var logScroll: ScrollView
@@ -34,6 +35,11 @@ class MainActivity : Activity() {
     private var latestVadDurationMs = 0L
     private var latestVadSpeechMs = 0L
     private var latestVadSamples = 0
+    private var latestAsrReady = false
+    private var latestAsrRunning = false
+    private var latestAsrResult = "-"
+    private var latestAsrCount = 0
+    private var latestAsrElapsedMs = 0L
 
     private val statusListener: (VoiceStatusSnapshot) -> Unit = { snapshot ->
         renderStatus(snapshot)
@@ -43,7 +49,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(createContentView())
 
-        appendLog("M4 debug page ready. KWS is wired; VAD segments one utterance after wake. ASR/TTS are not wired yet.")
+        appendLog("M5 debug page ready. KWS and VAD are wired; ASR decodes each VAD segment. Rule/TTS are not wired yet.")
     }
 
     override fun onStart() {
@@ -120,6 +126,14 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(14))
         }
         root.addView(vadText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+
+        asrText = TextView(this).apply {
+            text = getString(R.string.asr_template, "not ready", 0, 0L, "-")
+            textSize = 16f
+            setTextColor(0xFF365144.toInt())
+            setPadding(0, 0, 0, dp(14))
+        }
+        root.addView(asrText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
         rmsText = TextView(this).apply {
             text = getString(R.string.rms_template, 0.0, 0.0, 0L, 16_000)
@@ -261,6 +275,33 @@ class MainActivity : Activity() {
             latestVadDurationMs,
             latestVadSpeechMs,
             latestVadSamples,
+        )
+
+        if (snapshot.asrReady != null) {
+            latestAsrReady = snapshot.asrReady
+        }
+        if (snapshot.asrRunning != null) {
+            latestAsrRunning = snapshot.asrRunning
+        }
+        if (snapshot.asrCount != null) {
+            latestAsrCount = snapshot.asrCount
+        }
+        if (snapshot.asrLastElapsedMs != null) {
+            latestAsrElapsedMs = snapshot.asrLastElapsedMs
+        }
+        if (snapshot.asrText != null) {
+            latestAsrResult = snapshot.asrText
+        }
+        asrText.text = getString(
+            R.string.asr_template,
+            when {
+                latestAsrRunning -> "running"
+                latestAsrReady -> "ready"
+                else -> "not ready"
+            },
+            latestAsrCount,
+            latestAsrElapsedMs,
+            latestAsrResult,
         )
 
         if (snapshot.rms != null) {

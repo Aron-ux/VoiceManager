@@ -1,0 +1,1 @@
+﻿sherpa-onnx-paraformer-zh-small-2024-03-09-int8

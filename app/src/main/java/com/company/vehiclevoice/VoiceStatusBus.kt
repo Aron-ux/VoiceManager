@@ -18,6 +18,11 @@ data class VoiceStatusSnapshot(
     val vadLastDurationMs: Long? = null,
     val vadLastSpeechMs: Long? = null,
     val vadLastSamples: Int? = null,
+    val asrReady: Boolean? = null,
+    val asrRunning: Boolean? = null,
+    val asrText: String? = null,
+    val asrCount: Int? = null,
+    val asrLastElapsedMs: Long? = null,
 )
 
 object VoiceStatusBus {

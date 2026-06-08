@@ -15,6 +15,9 @@ import android.os.SystemClock
 import android.util.Log
 import com.company.vehiclevoice.audio.AudioRecorder
 import com.company.vehiclevoice.audio.PcmFrame
+import com.company.vehiclevoice.engine.AsrEngine
+import com.company.vehiclevoice.engine.AsrModelAssets
+import com.company.vehiclevoice.engine.AsrResult
 import com.company.vehiclevoice.engine.KwsDetection
 import com.company.vehiclevoice.engine.KwsEngine
 import com.company.vehiclevoice.engine.KwsModelAssets
@@ -29,6 +32,7 @@ class VoiceForegroundService : Service() {
     private var currentState = STATE_STOPPED
     private var audioRecorder: AudioRecorder? = null
     private var kwsEngine: KwsEngine? = null
+    private var asrEngine: AsrEngine? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastRmsBroadcastMs = 0L
     private var lastWakeDetectedMs = 0L
@@ -38,6 +42,10 @@ class VoiceForegroundService : Service() {
     private var vadSegmentCount = 0
     private var lastVadSegment: VadSegment? = null
     private var lastVadReason: VadEndReason? = null
+    private var asrCount = 0
+    private var asrRunning = false
+    private var lastAsrText = ""
+    private var lastAsrElapsedMs = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -68,6 +76,7 @@ class VoiceForegroundService : Service() {
         vadEngine = null
         stopAudioRecorder()
         stopKwsEngine()
+        stopAsrEngine()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -86,17 +95,18 @@ class VoiceForegroundService : Service() {
         currentState = STATE_IDLE_KWS
         startForeground(
             VOICE_NOTIFICATION_ID,
-            buildNotification("M4 service starting. Loading KWS model."),
+            buildNotification("M5 service starting. Loading KWS/ASR models."),
         )
 
         startKwsEngine()
+        startAsrEngine()
         startAudioRecorder()
         updateState(
             STATE_IDLE_KWS,
-            if (kwsEngine?.isStarted == true) {
-                "Foreground voice service started. KWS is listening; M4 VAD will segment one command after wake."
+            if (kwsEngine?.isStarted == true && asrEngine?.isStarted == true) {
+                "Foreground voice service started. KWS is listening; M5 ASR will decode VAD segments."
             } else {
-                "Foreground voice service started, but KWS is not ready. Check model files/logs."
+                "Foreground voice service started, but KWS or ASR is not ready. Check model files/logs."
             },
         )
     }
@@ -152,6 +162,28 @@ class VoiceForegroundService : Service() {
     private fun stopKwsEngine() {
         kwsEngine?.stop()
         kwsEngine = null
+    }
+
+    private fun startAsrEngine() {
+        if (asrEngine != null) {
+            return
+        }
+
+        try {
+            val modelDir = AsrModelAssets.ensureCopied(this)
+            val engine = AsrEngine(modelDir)
+            engine.start()
+            asrEngine = engine
+            updateState(STATE_IDLE_KWS, "ASR model loaded from ${modelDir.absolutePath}.")
+        } catch (error: Throwable) {
+            val detail = error.message ?: error.javaClass.simpleName
+            updateState(STATE_IDLE_KWS, "ASR model failed to load: $detail")
+        }
+    }
+
+    private fun stopAsrEngine() {
+        asrEngine?.stop()
+        asrEngine = null
     }
 
     private fun maybeProcessKws(frame: PcmFrame) {
@@ -229,9 +261,9 @@ class VoiceForegroundService : Service() {
         kwsEngine?.reset()
         updateState(
             STATE_VAD_END,
-            "VAD segment ready: reason=${segment.reason}, duration=${segment.durationMs}ms, speech=${segment.speechMs}ms, trailingSilence=${segment.trailingSilenceMs}ms, samples=${segment.samples.size}. ASR is intentionally disabled in M4.",
+            "VAD segment ready: reason=${segment.reason}, duration=${segment.durationMs}ms, speech=${segment.speechMs}ms, trailingSilence=${segment.trailingSilenceMs}ms, samples=${segment.samples.size}.",
         )
-        updateState(STATE_IDLE_KWS, "M4 VAD complete. Returning to IDLE_KWS for the next wake word.")
+        runAsr(segment)
     }
 
     private fun handleVadTimeout(event: VadEvent.Timeout) {
@@ -245,6 +277,46 @@ class VoiceForegroundService : Service() {
         updateState(
             STATE_IDLE_KWS,
             "VAD ended without valid speech: reason=${event.reason}, listened=${event.listenedMs}ms at frame ${event.frameSequence}. Returning to IDLE_KWS.",
+        )
+    }
+
+    private fun runAsr(segment: VadSegment) {
+        val engine = asrEngine
+        if (engine == null || !engine.isStarted) {
+            updateState(STATE_IDLE_KWS, "ASR is not ready. Returning to IDLE_KWS.")
+            return
+        }
+
+        asrRunning = true
+        updateState(STATE_ASR_RUNNING, "ASR started for ${segment.samples.size} samples.")
+        Thread({
+            val result = runCatching {
+                engine.recognize(segment)
+            }
+
+            mainHandler.post {
+                asrRunning = false
+                result
+                    .onSuccess { handleAsrResult(it) }
+                    .onFailure { error ->
+                        val detail = error.message ?: error.javaClass.simpleName
+                        updateState(STATE_IDLE_KWS, "ASR failed: $detail. Returning to IDLE_KWS.")
+                    }
+            }
+        }, "VehicleAsrRecognizer").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun handleAsrResult(result: AsrResult) {
+        asrCount += 1
+        lastAsrText = result.text.ifBlank { "<empty>" }
+        lastAsrElapsedMs = result.elapsedMs
+        kwsEngine?.reset()
+        updateState(
+            STATE_IDLE_KWS,
+            "ASR result #$asrCount: '$lastAsrText' in ${result.elapsedMs}ms for ${result.audioDurationMs}ms audio. Returning to IDLE_KWS.",
         )
     }
 
@@ -270,6 +342,11 @@ class VoiceForegroundService : Service() {
                 vadLastDurationMs = lastVadSegment?.durationMs,
                 vadLastSpeechMs = lastVadSegment?.speechMs,
                 vadLastSamples = lastVadSegment?.samples?.size,
+                asrReady = asrEngine?.isStarted == true,
+                asrRunning = asrRunning,
+                asrText = lastAsrText,
+                asrCount = asrCount,
+                asrLastElapsedMs = lastAsrElapsedMs,
             ),
         )
 
@@ -288,6 +365,11 @@ class VoiceForegroundService : Service() {
             putExtra(EXTRA_VAD_LAST_DURATION_MS, lastVadSegment?.durationMs ?: 0L)
             putExtra(EXTRA_VAD_LAST_SPEECH_MS, lastVadSegment?.speechMs ?: 0L)
             putExtra(EXTRA_VAD_LAST_SAMPLES, lastVadSegment?.samples?.size ?: 0)
+            putExtra(EXTRA_ASR_READY, asrEngine?.isStarted == true)
+            putExtra(EXTRA_ASR_RUNNING, asrRunning)
+            putExtra(EXTRA_ASR_TEXT, lastAsrText)
+            putExtra(EXTRA_ASR_COUNT, asrCount)
+            putExtra(EXTRA_ASR_LAST_ELAPSED_MS, lastAsrElapsedMs)
         }
         sendBroadcast(intent)
     }
@@ -319,6 +401,11 @@ class VoiceForegroundService : Service() {
                 vadLastDurationMs = lastVadSegment?.durationMs,
                 vadLastSpeechMs = lastVadSegment?.speechMs,
                 vadLastSamples = lastVadSegment?.samples?.size,
+                asrReady = asrEngine?.isStarted == true,
+                asrRunning = asrRunning,
+                asrText = lastAsrText,
+                asrCount = asrCount,
+                asrLastElapsedMs = lastAsrElapsedMs,
             ),
         )
 
@@ -335,6 +422,11 @@ class VoiceForegroundService : Service() {
             putExtra(EXTRA_VAD_LAST_DURATION_MS, lastVadSegment?.durationMs ?: 0L)
             putExtra(EXTRA_VAD_LAST_SPEECH_MS, lastVadSegment?.speechMs ?: 0L)
             putExtra(EXTRA_VAD_LAST_SAMPLES, lastVadSegment?.samples?.size ?: 0)
+            putExtra(EXTRA_ASR_READY, asrEngine?.isStarted == true)
+            putExtra(EXTRA_ASR_RUNNING, asrRunning)
+            putExtra(EXTRA_ASR_TEXT, lastAsrText)
+            putExtra(EXTRA_ASR_COUNT, asrCount)
+            putExtra(EXTRA_ASR_LAST_ELAPSED_MS, lastAsrElapsedMs)
         }
         sendBroadcast(statusIntent)
     }
@@ -402,6 +494,11 @@ class VoiceForegroundService : Service() {
         const val EXTRA_VAD_LAST_DURATION_MS = "extra_vad_last_duration_ms"
         const val EXTRA_VAD_LAST_SPEECH_MS = "extra_vad_last_speech_ms"
         const val EXTRA_VAD_LAST_SAMPLES = "extra_vad_last_samples"
+        const val EXTRA_ASR_READY = "extra_asr_ready"
+        const val EXTRA_ASR_RUNNING = "extra_asr_running"
+        const val EXTRA_ASR_TEXT = "extra_asr_text"
+        const val EXTRA_ASR_COUNT = "extra_asr_count"
+        const val EXTRA_ASR_LAST_ELAPSED_MS = "extra_asr_last_elapsed_ms"
 
         const val STATE_UNKNOWN = "UNKNOWN"
         const val STATE_STOPPED = "STOPPED"
@@ -409,6 +506,7 @@ class VoiceForegroundService : Service() {
         const val STATE_IDLE_KWS = "IDLE_KWS"
         const val STATE_LISTENING = "LISTENING"
         const val STATE_VAD_END = "VAD_END"
+        const val STATE_ASR_RUNNING = "ASR_RUNNING"
 
         private const val CHANNEL_ID = "voice_foreground_service"
         private const val VOICE_NOTIFICATION_ID = 20260607
