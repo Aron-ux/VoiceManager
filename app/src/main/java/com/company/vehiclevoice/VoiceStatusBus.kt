@@ -12,6 +12,12 @@ data class VoiceStatusSnapshot(
     val kwsReady: Boolean? = null,
     val wakeKeyword: String? = null,
     val wakeCount: Int? = null,
+    val vadActive: Boolean? = null,
+    val vadSegmentCount: Int? = null,
+    val vadLastReason: String? = null,
+    val vadLastDurationMs: Long? = null,
+    val vadLastSpeechMs: Long? = null,
+    val vadLastSamples: Int? = null,
 )
 
 object VoiceStatusBus {

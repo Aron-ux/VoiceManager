@@ -12,11 +12,16 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import com.company.vehiclevoice.audio.AudioRecorder
 import com.company.vehiclevoice.audio.PcmFrame
 import com.company.vehiclevoice.engine.KwsDetection
 import com.company.vehiclevoice.engine.KwsEngine
 import com.company.vehiclevoice.engine.KwsModelAssets
+import com.company.vehiclevoice.engine.VadEndReason
+import com.company.vehiclevoice.engine.VadEngine
+import com.company.vehiclevoice.engine.VadEvent
+import com.company.vehiclevoice.engine.VadSegment
 
 class VoiceForegroundService : Service() {
 
@@ -29,15 +34,10 @@ class VoiceForegroundService : Service() {
     private var lastWakeDetectedMs = 0L
     private var wakeCount = 0
     private var lastWakeKeyword: String? = null
-
-    private val returnToIdleRunnable = Runnable {
-        if (currentState == STATE_LISTENING) {
-            updateState(
-                STATE_IDLE_KWS,
-                "M3 KWS debug cycle complete. Returning to IDLE_KWS; VAD/ASR are intentionally disabled.",
-            )
-        }
-    }
+    private var vadEngine: VadEngine? = null
+    private var vadSegmentCount = 0
+    private var lastVadSegment: VadSegment? = null
+    private var lastVadReason: VadEndReason? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -65,7 +65,7 @@ class VoiceForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        mainHandler.removeCallbacks(returnToIdleRunnable)
+        vadEngine = null
         stopAudioRecorder()
         stopKwsEngine()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -86,7 +86,7 @@ class VoiceForegroundService : Service() {
         currentState = STATE_IDLE_KWS
         startForeground(
             VOICE_NOTIFICATION_ID,
-            buildNotification("M3 service starting. Loading KWS model."),
+            buildNotification("M4 service starting. Loading KWS model."),
         )
 
         startKwsEngine()
@@ -94,7 +94,7 @@ class VoiceForegroundService : Service() {
         updateState(
             STATE_IDLE_KWS,
             if (kwsEngine?.isStarted == true) {
-                "Foreground voice service started. KWS is listening for 小智小智 / 你好小智."
+                "Foreground voice service started. KWS is listening; M4 VAD will segment one command after wake."
             } else {
                 "Foreground voice service started, but KWS is not ready. Check model files/logs."
             },
@@ -127,6 +127,7 @@ class VoiceForegroundService : Service() {
             object : AudioRecorder.Listener {
                 override fun onFrame(frame: PcmFrame) {
                     maybeProcessKws(frame)
+                    maybeProcessVad(frame)
                     maybeBroadcastRms(frame)
                 }
 
@@ -182,12 +183,69 @@ class VoiceForegroundService : Service() {
     private fun handleWakeDetected(detection: KwsDetection) {
         wakeCount += 1
         lastWakeKeyword = detection.keyword
-        mainHandler.removeCallbacks(returnToIdleRunnable)
+        vadEngine = VadEngine()
+        lastVadReason = null
         updateState(
             STATE_LISTENING,
-            "Wake word detected: ${detection.keyword} at frame ${detection.frameSequence}.",
+            "Wake word detected: ${detection.keyword} at frame ${detection.frameSequence}. VAD listening started.",
         )
-        mainHandler.postDelayed(returnToIdleRunnable, LISTENING_DEBUG_HOLD_MS)
+    }
+
+    private fun maybeProcessVad(frame: PcmFrame) {
+        if (currentState != STATE_LISTENING) {
+            return
+        }
+
+        val event = vadEngine?.accept(frame) ?: return
+        mainHandler.post {
+            when (event) {
+                is VadEvent.SpeechStarted -> handleVadSpeechStarted(event)
+                is VadEvent.SegmentReady -> handleVadSegmentReady(event.segment)
+                is VadEvent.Timeout -> handleVadTimeout(event)
+            }
+        }
+    }
+
+    private fun handleVadSpeechStarted(event: VadEvent.SpeechStarted) {
+        if (currentState != STATE_LISTENING) {
+            return
+        }
+
+        updateState(
+            STATE_LISTENING,
+            "VAD speech started at frame ${event.frameSequence}; rms=${"%.4f".format(event.rms)}, threshold=${"%.4f".format(event.threshold)}.",
+        )
+    }
+
+    private fun handleVadSegmentReady(segment: VadSegment) {
+        if (currentState != STATE_LISTENING) {
+            return
+        }
+
+        vadSegmentCount += 1
+        lastVadSegment = segment
+        lastVadReason = segment.reason
+        vadEngine = null
+        kwsEngine?.reset()
+        updateState(
+            STATE_VAD_END,
+            "VAD segment ready: reason=${segment.reason}, duration=${segment.durationMs}ms, speech=${segment.speechMs}ms, trailingSilence=${segment.trailingSilenceMs}ms, samples=${segment.samples.size}. ASR is intentionally disabled in M4.",
+        )
+        updateState(STATE_IDLE_KWS, "M4 VAD complete. Returning to IDLE_KWS for the next wake word.")
+    }
+
+    private fun handleVadTimeout(event: VadEvent.Timeout) {
+        if (currentState != STATE_LISTENING) {
+            return
+        }
+
+        lastVadReason = event.reason
+        vadEngine = null
+        kwsEngine?.reset()
+        updateState(
+            STATE_IDLE_KWS,
+            "VAD ended without valid speech: reason=${event.reason}, listened=${event.listenedMs}ms at frame ${event.frameSequence}. Returning to IDLE_KWS.",
+        )
     }
 
     private fun maybeBroadcastRms(frame: PcmFrame) {
@@ -206,6 +264,12 @@ class VoiceForegroundService : Service() {
                 kwsReady = kwsEngine?.isStarted == true,
                 wakeKeyword = lastWakeKeyword,
                 wakeCount = wakeCount,
+                vadActive = vadEngine != null,
+                vadSegmentCount = vadSegmentCount,
+                vadLastReason = lastVadReason?.name,
+                vadLastDurationMs = lastVadSegment?.durationMs,
+                vadLastSpeechMs = lastVadSegment?.speechMs,
+                vadLastSamples = lastVadSegment?.samples?.size,
             ),
         )
 
@@ -218,12 +282,19 @@ class VoiceForegroundService : Service() {
             putExtra(EXTRA_KWS_READY, kwsEngine?.isStarted == true)
             putExtra(EXTRA_WAKE_KEYWORD, lastWakeKeyword)
             putExtra(EXTRA_WAKE_COUNT, wakeCount)
+            putExtra(EXTRA_VAD_ACTIVE, vadEngine != null)
+            putExtra(EXTRA_VAD_SEGMENT_COUNT, vadSegmentCount)
+            putExtra(EXTRA_VAD_LAST_REASON, lastVadReason?.name)
+            putExtra(EXTRA_VAD_LAST_DURATION_MS, lastVadSegment?.durationMs ?: 0L)
+            putExtra(EXTRA_VAD_LAST_SPEECH_MS, lastVadSegment?.speechMs ?: 0L)
+            putExtra(EXTRA_VAD_LAST_SAMPLES, lastVadSegment?.samples?.size ?: 0)
         }
         sendBroadcast(intent)
     }
 
     private fun updateState(state: String, message: String) {
         currentState = state
+        Log.i(LOG_TAG, "state=$state $message")
 
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.notify(
@@ -242,6 +313,12 @@ class VoiceForegroundService : Service() {
                 kwsReady = kwsEngine?.isStarted == true,
                 wakeKeyword = lastWakeKeyword,
                 wakeCount = wakeCount,
+                vadActive = vadEngine != null,
+                vadSegmentCount = vadSegmentCount,
+                vadLastReason = lastVadReason?.name,
+                vadLastDurationMs = lastVadSegment?.durationMs,
+                vadLastSpeechMs = lastVadSegment?.speechMs,
+                vadLastSamples = lastVadSegment?.samples?.size,
             ),
         )
 
@@ -252,6 +329,12 @@ class VoiceForegroundService : Service() {
             putExtra(EXTRA_KWS_READY, kwsEngine?.isStarted == true)
             putExtra(EXTRA_WAKE_KEYWORD, lastWakeKeyword)
             putExtra(EXTRA_WAKE_COUNT, wakeCount)
+            putExtra(EXTRA_VAD_ACTIVE, vadEngine != null)
+            putExtra(EXTRA_VAD_SEGMENT_COUNT, vadSegmentCount)
+            putExtra(EXTRA_VAD_LAST_REASON, lastVadReason?.name)
+            putExtra(EXTRA_VAD_LAST_DURATION_MS, lastVadSegment?.durationMs ?: 0L)
+            putExtra(EXTRA_VAD_LAST_SPEECH_MS, lastVadSegment?.speechMs ?: 0L)
+            putExtra(EXTRA_VAD_LAST_SAMPLES, lastVadSegment?.samples?.size ?: 0)
         }
         sendBroadcast(statusIntent)
     }
@@ -313,18 +396,25 @@ class VoiceForegroundService : Service() {
         const val EXTRA_KWS_READY = "extra_kws_ready"
         const val EXTRA_WAKE_KEYWORD = "extra_wake_keyword"
         const val EXTRA_WAKE_COUNT = "extra_wake_count"
+        const val EXTRA_VAD_ACTIVE = "extra_vad_active"
+        const val EXTRA_VAD_SEGMENT_COUNT = "extra_vad_segment_count"
+        const val EXTRA_VAD_LAST_REASON = "extra_vad_last_reason"
+        const val EXTRA_VAD_LAST_DURATION_MS = "extra_vad_last_duration_ms"
+        const val EXTRA_VAD_LAST_SPEECH_MS = "extra_vad_last_speech_ms"
+        const val EXTRA_VAD_LAST_SAMPLES = "extra_vad_last_samples"
 
         const val STATE_UNKNOWN = "UNKNOWN"
         const val STATE_STOPPED = "STOPPED"
         const val STATE_STOPPING = "STOPPING"
         const val STATE_IDLE_KWS = "IDLE_KWS"
         const val STATE_LISTENING = "LISTENING"
+        const val STATE_VAD_END = "VAD_END"
 
         private const val CHANNEL_ID = "voice_foreground_service"
         private const val VOICE_NOTIFICATION_ID = 20260607
         private const val RMS_BROADCAST_INTERVAL_MS = 200L
         private const val WAKE_COOLDOWN_MS = 800L
-        private const val LISTENING_DEBUG_HOLD_MS = 1_500L
+        private const val LOG_TAG = "VehicleVoice"
 
         fun createStartIntent(context: Context): Intent {
             return Intent(context, VoiceForegroundService::class.java).apply {

@@ -20,6 +20,7 @@ class MainActivity : Activity() {
 
     private lateinit var statusText: TextView
     private lateinit var kwsText: TextView
+    private lateinit var vadText: TextView
     private lateinit var rmsText: TextView
     private lateinit var logText: TextView
     private lateinit var logScroll: ScrollView
@@ -27,6 +28,12 @@ class MainActivity : Activity() {
     private var latestWakeKeyword = "-"
     private var latestWakeCount = 0
     private var latestKwsReady = false
+    private var latestVadActive = false
+    private var latestVadSegmentCount = 0
+    private var latestVadReason = "-"
+    private var latestVadDurationMs = 0L
+    private var latestVadSpeechMs = 0L
+    private var latestVadSamples = 0
 
     private val statusListener: (VoiceStatusSnapshot) -> Unit = { snapshot ->
         renderStatus(snapshot)
@@ -36,7 +43,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(createContentView())
 
-        appendLog("M3 debug page ready. sherpa-onnx KWS is wired; VAD/ASR/TTS are not wired yet.")
+        appendLog("M4 debug page ready. KWS is wired; VAD segments one utterance after wake. ASR/TTS are not wired yet.")
     }
 
     override fun onStart() {
@@ -105,6 +112,14 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(14))
         }
         root.addView(kwsText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+
+        vadText = TextView(this).apply {
+            text = getString(R.string.vad_template, "idle", 0, "-", 0L, 0L, 0)
+            textSize = 16f
+            setTextColor(0xFF365144.toInt())
+            setPadding(0, 0, 0, dp(14))
+        }
+        root.addView(vadText, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
         rmsText = TextView(this).apply {
             text = getString(R.string.rms_template, 0.0, 0.0, 0L, 16_000)
@@ -218,6 +233,34 @@ class MainActivity : Activity() {
             if (latestKwsReady) "ready" else "not ready",
             latestWakeCount,
             latestWakeKeyword,
+        )
+
+        if (snapshot.vadActive != null) {
+            latestVadActive = snapshot.vadActive
+        }
+        if (snapshot.vadSegmentCount != null) {
+            latestVadSegmentCount = snapshot.vadSegmentCount
+        }
+        if (!snapshot.vadLastReason.isNullOrBlank()) {
+            latestVadReason = snapshot.vadLastReason
+        }
+        if (snapshot.vadLastDurationMs != null) {
+            latestVadDurationMs = snapshot.vadLastDurationMs
+        }
+        if (snapshot.vadLastSpeechMs != null) {
+            latestVadSpeechMs = snapshot.vadLastSpeechMs
+        }
+        if (snapshot.vadLastSamples != null) {
+            latestVadSamples = snapshot.vadLastSamples
+        }
+        vadText.text = getString(
+            R.string.vad_template,
+            if (latestVadActive) "listening" else "idle",
+            latestVadSegmentCount,
+            latestVadReason,
+            latestVadDurationMs,
+            latestVadSpeechMs,
+            latestVadSamples,
         )
 
         if (snapshot.rms != null) {
